@@ -619,7 +619,7 @@ def discover(root: Path, outdir: Path) -> List[System]:
         rel_parts = f.relative_to(root).parts
         if any(p.startswith(".") for p in rel_parts):
             continue
-        if outdir in f.parents:
+        if outdir in f.parents or any(p.startswith(OUT_DIR_NAME) for p in rel_parts):
             continue
         d = f.parent
         if d not in found:
@@ -1391,7 +1391,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="root folder containing one subfolder per system "
                         "(default: .)")
     p.add_argument("-o", "--out",
-                   help=f"output folder (default: <root>/{OUT_DIR_NAME})")
+                   help=f"output folder (default: a new <root>/{OUT_DIR_NAME}_YYYYMMDD_HHMMSS "
+                        "each run, so nothing is overwritten)")
     p.add_argument("--config",
                    help=f"configuration file (default: <root>/{CONFIG_NAME})")
     p.add_argument("--lang", metavar="{pt,en}",
@@ -1430,8 +1431,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     report = Report()
-    outdir = (Path(args.out).resolve() if args.out
-              else Path(args.root).resolve() / OUT_DIR_NAME)
+    if args.out is None:        # padrão: pasta nova a cada execução (não sobrescreve)
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.out = str(Path(args.root).resolve() / f"{OUT_DIR_NAME}_{stamp}")
+    outdir = Path(args.out).resolve()
     status = "ok"
     code = 0
     try:
