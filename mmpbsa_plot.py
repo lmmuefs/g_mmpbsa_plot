@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-mmpbsa_plot.py — gráficos de MM/PBSA a partir de saídas do g_mmpbsa (GROMOS).
-
-O script varre as subpastas, detecta os arquivos de cada sistema e abre um
-menu para escolher sistemas, gráficos e opções. Ao final grava um relatório
-.txt com tudo o que foi feito e os resultados numéricos.
-
-Arquivos reconhecidos em cada subpasta:
-    binding_energy.xvg            -> energia vs. tempo (vdW, elet., polar, apolar, total)
-    energy_summary.csv            -> médias ± desvio dos componentes
-    residues_energy_summary.csv   -> decomposição por resíduo
-
-Uso:
-    python mmpbsa_plot.py                 # menu interativo, pasta atual
-    python mmpbsa_plot.py /caminho/dados  # outra pasta raiz
-    python mmpbsa_plot.py --help          # opções para uso sem menu
-
-Dependências: numpy, pandas, matplotlib.
-"""
 from __future__ import annotations
 
 import argparse
@@ -41,9 +22,6 @@ from matplotlib.ticker import AutoMinorLocator, ScalarFormatter
 
 logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
-# ============================================================
-# CONSTANTES
-# ============================================================
 
 KJ_TO_KCAL = 4.184
 OUT_DIR_NAME = "MM_PBSA_plots"
@@ -52,19 +30,14 @@ CONFIG_NAME = "plot_style.ini"
 XVG_NAME = "binding_energy.xvg"
 RES_NAME = "residues_energy_summary.csv"
 SUM_NAME = "energy_summary.csv"
-# Valores por frame da decomposição (g_mmpbsa -mmcon/-pcon/-apcon): permitem
-# recalcular a decomposição por resíduo dentro da faixa de tempo escolhida.
 CONTRIB_NAMES = {"contrib_mm.dat": "contrib_mm", "contrib_pol.dat": "contrib_pol",
                  "contrib_apol.dat": "contrib_apol"}
 
-# Paleta padrão dos sistemas (distinguível, amigável a daltonismo e à impressão)
 PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
            "#E69F00", "#56B4E9", "#7F7F7F", "#000000"]
 
-# Cores padrão dos componentes no gráfico por resíduo
 COMPONENT_COLORS = ["#18c5d9", "#e600a9", "#9b00d4", "#38e600", "#000000"]
 
-# Componentes: chave interna -> (coluna média, coluna desvio) no residues CSV
 COMPONENTS = ["vdw", "electrostatic", "polar", "nonpolar", "total"]
 RES_COLS = {
     "vdw": ("vDW", "vdW-stddev"),
@@ -72,17 +45,14 @@ RES_COLS = {
     "polar": ("polar", "polar-stddev"),
     "nonpolar": ("apolar", "apolar-stddev"),
     "total": ("total", "total-stddev"),
-    # só existe na decomposição recalculada em uma faixa: contrib_MM junta vdW + elet.
     "mm": ("MM", "MM-stddev"),
 }
-# Resíduos que NÃO são considerados ligante na detecção automática
 STANDARD_RESIDUES = set("""
 ALA ARG ASN ASP CYS GLN GLU GLY HIS HID HIE HIP HSD HSE HSP ILE LEU LYS MET PHE
 PRO SER THR TRP TYR VAL CYX CYM ASH GLH LYN ACE NME NMA NH2 NA CL K MG ZN CA
 SOL WAT HOH
 """.split())
 
-# Nomes das pastas de saída, por idioma
 GROUP_DIRS = {
     "en": {"time": "energy_vs_time", "summary": "summary",
            "residues": "per_residue", "tables": "tables"},
@@ -90,7 +60,6 @@ GROUP_DIRS = {
            "residues": "por_residuo", "tables": "tabelas"},
 }
 
-# Textos do relatório .txt e das tabelas, por idioma
 REPORT_TEXT = {
     "en": dict(
         title="MM/PBSA REPORT", date="Date", root="Root folder",
@@ -191,7 +160,6 @@ TEXT_PT = {
     "comp_mm": "MM (vDW + Elet.)",
 }
 
-# Configuração editável (plot_style.ini)
 DEFAULT_CONFIG: Dict[str, Dict[str, str]] = {
     "general": {"language": "en", "version": "2"},
     "names": {},
@@ -228,17 +196,15 @@ CONFIG_HEADER = """\
 """
 
 
-UI_LANG = ["pt"]      # idioma da interface (menus, avisos e mensagens)
+UI_LANG = ["pt"]
 
 
 def _(msg: str, /, **kw) -> str:
-    """Traduz uma mensagem da interface (as chaves são os textos em português)."""
     out = EN_UI.get(msg, msg) if UI_LANG[0] == "en" else msg
     return out.format(**kw) if kw else out
 
 
 def default_ui_lang() -> str:
-    """Idioma sugerido na primeira vez: o do sistema (pt* -> pt, resto -> en)."""
     import os
     loc = (os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES")
            or os.environ.get("LANG") or "")
@@ -246,20 +212,16 @@ def default_ui_lang() -> str:
 
 
 class DataError(Exception):
-    """Arquivo de dados em formato inesperado."""
+    pass
 
 
 class UsageError(Exception):
-    """Pedido inconsistente do usuário."""
+    pass
 
-
-# ============================================================
-# ESTRUTURAS
-# ============================================================
 
 @dataclass
 class System:
-    key: str                     # caminho relativo da pasta (identificador)
+    key: str
     path: Path
     xvg: Optional[Path] = None
     res: Optional[Path] = None
@@ -278,13 +240,12 @@ class System:
 
 
 class Report:
-    """Acumula o texto do relatório final."""
 
     def __init__(self) -> None:
         self.lines: List[str] = []
         self.warnings: List[str] = []
         self.files: List[Path] = []
-        self.base: Optional[Path] = None      # para exibir caminhos curtos
+        self.base: Optional[Path] = None
 
     def add(self, text: str = "") -> None:
         self.lines.append(text)
@@ -318,13 +279,12 @@ class Ctx:
     interactive: bool = False
     export_csv: bool = False
     lang: str = "en"
-    layout: str = "type"          # type | format | flat
+    layout: str = "type"
 
     def t(self, key: str) -> str:
         return self.cfg[f"text_{self.lang}"][key]
 
     def target_dir(self, group: str, fmt: Optional[str] = None) -> Path:
-        """Pasta de destino conforme a organização escolhida."""
         names = GROUP_DIRS[self.lang]
         if group == "tables":
             d = self.outdir / names["tables"]
@@ -338,12 +298,8 @@ class Ctx:
         return d
 
 
-# ============================================================
-# ENTRADA DO USUÁRIO
-# ============================================================
-
-AUTO = False   # --yes: usa padrões e nunca pergunta
-_STEP = [0]    # contador das etapas exibidas no menu
+AUTO = False
+_STEP = [0]
 
 USE_COLOR = sys.stdout.isatty()
 
@@ -361,7 +317,6 @@ def dim(text: str) -> str:
 
 
 def step(title: str) -> None:
-    """Cabeçalho numerado de cada etapa do menu (omitido no modo --yes)."""
     if AUTO:
         return
     _STEP[0] += 1
@@ -372,7 +327,6 @@ def step(title: str) -> None:
 
 def ask(text: str, parse, preset: Optional[str] = None,
         default: Optional[str] = None):
-    """Pergunta até receber algo que `parse` aceite (ValueError = inválido)."""
     text = _(text)
     if preset is not None:
         try:
@@ -465,7 +419,6 @@ def parse_window(text: str) -> Tuple[float, float]:
 
 
 def parse_top(text: str) -> Optional[int]:
-    """Retorna 5, 10 ou None (= todos)."""
     s = text.strip().lower()
     if s in ("1", "5", "top5"):
         return 5
@@ -510,12 +463,7 @@ def parse_name(text: str) -> str:
     return name
 
 
-# ============================================================
-# CONFIGURAÇÃO (plot_style.ini)
-# ============================================================
-
 def peek_saved_lang(path: Path) -> str:
-    """Último idioma usado (lido do .ini) ou o do sistema."""
     try:
         cp = configparser.ConfigParser(interpolation=None)
         cp.read(path, encoding="utf-8")
@@ -529,7 +477,7 @@ def peek_saved_lang(path: Path) -> str:
 
 def load_config(path: Path) -> Tuple[configparser.ConfigParser, bool]:
     cfg = configparser.ConfigParser(interpolation=None)
-    cfg.optionxform = str          # preserva maiúsculas/minúsculas das chaves
+    cfg.optionxform = str
     changed = False
     if path.exists():
         try:
@@ -540,7 +488,7 @@ def load_config(path: Path) -> Tuple[configparser.ConfigParser, bool]:
         changed = True
     legacy = path.exists() and not (cfg.has_section("general")
                                     and cfg.has_option("general", "version"))
-    if legacy:                       # formato antigo: bloco único [text], fonte serif
+    if legacy:
         if cfg.has_section("text"):
             if not cfg.has_section("text_en"):
                 cfg.add_section("text_en")
@@ -580,7 +528,6 @@ def cfg_float(cfg: configparser.ConfigParser, sec: str, key: str) -> float:
 
 
 def resolve_font(family: str) -> str:
-    """Nome da fonte realmente usada (família pedida ou a primeira reserva)."""
     for name in (family, "Arial", "Liberation Sans", "Helvetica", "DejaVu Sans"):
         try:
             path = font_manager.findfont(name, fallback_to_default=False)
@@ -594,10 +541,8 @@ def apply_style(cfg: configparser.ConfigParser) -> None:
     fam = cfg["font"].get("family", "Arial")
     plt.rcParams.update({
         "font.family": "sans-serif",
-        # Liberation Sans tem as mesmas métricas do Arial (reserva em Linux)
         "font.sans-serif": [fam, "Arial", "Liberation Sans", "Helvetica",
                             "DejaVu Sans"],
-        # mathtext (ex.: $\it{Mtb}$) na mesma família da fonte do gráfico
         "mathtext.fontset": "custom",
         "mathtext.rm": "sans",
         "mathtext.it": "sans:italic",
@@ -614,16 +559,11 @@ def apply_style(cfg: configparser.ConfigParser) -> None:
         "ytick.major.width": 1.1,
         "xtick.major.size": 5,
         "ytick.major.size": 5,
-        # texto continua texto nos arquivos vetoriais (editável no Inkscape etc.)
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
         "svg.fonttype": "none",
     })
 
-
-# ============================================================
-# DESCOBERTA E LEITURA DE ARQUIVOS
-# ============================================================
 
 def discover(root: Path, outdir: Path) -> List[System]:
     found: Dict[Path, System] = {}
@@ -681,14 +621,13 @@ def load_residues(path: Path) -> pd.DataFrame:
 
 
 def _read_contrib(path: Path) -> Tuple[np.ndarray, List[str], np.ndarray]:
-    """Lê um contrib_*.dat: (tempo em ns, resíduos, valores em kcal/mol por frame)."""
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             head = fh.readline().lstrip("#").split()
         arr = np.loadtxt(path, comments="#", ndmin=2)
     except (ValueError, OSError) as e:
         raise DataError(_("{path}: não consegui ler os números ({err})", path=path, err=e))
-    names = head[1:]                       # primeira coluna: "Time"
+    names = head[1:]
     if arr.shape[1] != len(names) + 1:
         raise DataError(_("{path}: cabeçalho e dados não batem", path=path))
     return arr[:, 0] / 1000.0, names, arr[:, 1:] / KJ_TO_KCAL
@@ -707,12 +646,6 @@ def contrib_span(s: "System") -> Optional[Tuple[float, float]]:
 
 
 def load_residues_window(s: "System", window: Tuple[float, float]) -> pd.DataFrame:
-    """Decomposição por resíduo recalculada só com os frames dentro da faixa.
-
-    Média e desvio (ddof=1) sobre os frames, como o g_mmpbsa faz no CSV.
-    contrib_MM já soma vdW + eletrostática, então sai uma coluna 'MM' no lugar
-    das duas. Colunas no mesmo formato do load_residues().
-    """
     t, names, mm = _read_contrib(s.contrib_mm)
     _t2, n2, pol = _read_contrib(s.contrib_pol)
     _t3, n3, apol = _read_contrib(s.contrib_apol)
@@ -769,10 +702,6 @@ def load_summary(path: Path) -> Dict[str, Tuple[float, float]]:
     return out
 
 
-# ============================================================
-# RESÍDUOS: LIGANTE, RANKING E TABELAS
-# ============================================================
-
 def split_label(label: str) -> Tuple[str, Optional[int]]:
     m = re.match(r"^(.*)-(\d+)$", label)
     return (m.group(1), int(m.group(2))) if m else (label, None)
@@ -792,14 +721,12 @@ def make_ranking(df: pd.DataFrame, drop: Optional[str]) -> pd.DataFrame:
 
 
 def comps_of(df: pd.DataFrame) -> List[str]:
-    """Componentes presentes: vdW/elet. separados (CSV) ou MM junto (janela)."""
     if "mm" in RES_COLS and RES_COLS["mm"][0] in df.columns:
         return ["mm", "polar", "nonpolar", "total"]
     return list(COMPONENTS)
 
 
 def pm_table(rank: pd.DataFrame, label: str, lang: str) -> pd.DataFrame:
-    """Tabela 'média ± desvio' (cabeçalhos no idioma escolhido)."""
     S = REPORT_TEXT[lang]
     t = pd.DataFrame({S["rank"]: rank["Rank"], S["complex"]: label,
                       S["residue"]: rank["Residue"]})
@@ -822,12 +749,7 @@ def rank_text(rank: pd.DataFrame, cfg: configparser.ConfigParser,
     return sub.to_string(index=False, float_format=lambda x: f"{x:.2f}")
 
 
-# ============================================================
-# SAÍDA DE FIGURAS
-# ============================================================
-
 def finish(ctx: Ctx, fig, stem: str, group: str, rect=None) -> None:
-    """Mostra (opcional), salva nos formatos escolhidos e fecha a figura."""
     if rect:
         fig.tight_layout(rect=rect)
     else:
@@ -850,24 +772,22 @@ def finish(ctx: Ctx, fig, stem: str, group: str, rect=None) -> None:
     plt.close(fig)
 
 
-DECIMAL_COMMA = [False]     # True quando o idioma é português
+DECIMAL_COMMA = [False]
 
 
 class CommaFormatter(ScalarFormatter):
-    """ScalarFormatter com vírgula decimal (padrão brasileiro)."""
 
     def __call__(self, x, pos=None):
         return super().__call__(x, pos).replace(".", ",")
 
 
 def style_axes(ax, minor_x: bool = True) -> None:
-    """Acabamento comum: moldura, ticks para dentro com ticks menores."""
     for sp in ax.spines.values():
         sp.set_linewidth(1.2)
     ax.set_axisbelow(True)
     if DECIMAL_COMMA[0]:
         ax.yaxis.set_major_formatter(CommaFormatter())
-        if minor_x:                      # eixo x numérico (não categórico)
+        if minor_x:
             ax.xaxis.set_major_formatter(CommaFormatter())
     ax.tick_params(axis="both", which="major", direction="in", length=5,
                    width=1.1, pad=5, top=False, right=False)
@@ -881,16 +801,11 @@ def style_axes(ax, minor_x: bool = True) -> None:
 
 
 def legend_on_top(ax, n_items: int, ncol: Optional[int] = None) -> None:
-    """Legenda em linha no topo, numa faixa livre acima dos dados."""
     lo, hi = ax.get_ylim()
     ax.set_ylim(lo, hi + 0.16 * (hi - lo))
     ax.legend(frameon=False, loc="upper center", ncol=ncol or min(n_items, 3),
               columnspacing=1.8, handlelength=1.8, borderaxespad=0.4)
 
-
-# ============================================================
-# GRÁFICOS
-# ============================================================
 
 def plot_time(ctx: Ctx, key: str, systems: List[System],
               data: Dict[str, Tuple[np.ndarray, Dict[str, np.ndarray]]],
@@ -965,7 +880,6 @@ def plot_residues_top(ctx: Ctx, s: System, rank: pd.DataFrame,
     nc = len(comps)
     width = 0.75 / 5
     fig, ax = plt.subplots(figsize=(min(11.0, max(7.5, 0.95 * k + 3.0)), 5.4))
-    # janela parcial: 4 barras (MM junta vdW + elet.); reaproveita as cores de polar/apolar/total
     colors = comp_colors if nc == 5 else [comp_colors[0]] + comp_colors[2:5]
     for i, comp in enumerate(comps):
         m, sd = RES_COLS[comp]
@@ -981,7 +895,6 @@ def plot_residues_top(ctx: Ctx, s: System, rank: pd.DataFrame,
     ax.set_xlim(-0.6, k - 0.4)
     ax.set_xlabel(ctx.t("residue_xlabel"), fontweight="bold", labelpad=8)
     ax.set_ylabel(ctx.t("energy_ylabel"), fontweight="bold", labelpad=8)
-    # título em negrito + subtítulo (nome do sistema) em fonte normal
     ax.set_title(ctx.t("residue_title"), fontweight="bold",
                  fontsize=cfg_float(ctx.cfg, "font", "title_size") + 2, pad=30)
     ax.annotate(s.label, xy=(0.5, 1.0), xycoords="axes fraction",
@@ -1008,7 +921,6 @@ def plot_residue_profile(ctx: Ctx, s: System, rank: pd.DataFrame) -> None:
         n = split_label(row["Residue"])[1]
         if n is None:
             continue
-        # alturas escalonadas + linha de ligação, para vizinhos não se sobreporem
         ax.annotate(row["Residue"], (n, row["total"]),
                     xytext=(0, -14 - 14 * i), textcoords="offset points",
                     ha="center", va="top", fontsize=9,
@@ -1021,15 +933,11 @@ def plot_residue_profile(ctx: Ctx, s: System, rank: pd.DataFrame) -> None:
                  pad=14)
     ax.margins(x=0.01)
     lo, hi = ax.get_ylim()
-    ax.set_ylim(lo - 0.50 * (hi - lo), hi)    # espaço para os rótulos dos melhores
+    ax.set_ylim(lo - 0.50 * (hi - lo), hi)
     ax.grid(axis="y", linewidth=0.6, alpha=0.3, zorder=0)
     style_axes(ax)
     finish(ctx, fig, f"{s.slug}_per_residue_profile", "residues")
 
-
-# ============================================================
-# MENUS
-# ============================================================
 
 PLOT_ITEMS = [
     ("total", "Energia no tempo — Total"),
@@ -1066,7 +974,7 @@ def choose_plots(items: List[Tuple[str, str]], preset: Optional[str]) -> List[st
         if t in ("all", "todos", "a", "*"):
             return keys
         parts = [p for p in re.split(r"[\s,;]+", t) if p]
-        if parts and all(p in keys for p in parts):     # por nome (--plots)
+        if parts and all(p in keys for p in parts):
             return [k for k in keys if k in parts]
         return [keys[i] for i in parse_indices(text, len(keys))]
 
@@ -1090,10 +998,6 @@ def fmt_systems(systems: List[System]) -> None:
     print()
 
 
-# ============================================================
-# EXECUÇÃO
-# ============================================================
-
 def run(args, report: Report) -> None:
     global AUTO
     AUTO = bool(args.yes)
@@ -1101,7 +1005,6 @@ def run(args, report: Report) -> None:
     outdir = Path(args.out).resolve() if args.out else root / OUT_DIR_NAME
     cfg_path = Path(args.config).resolve() if args.config else root / CONFIG_NAME
 
-    # ---------- idioma: interface, gráficos, tabelas e relatório ----------
     print()
     print(bold("  mmpbsa_plot"))
     if args.lang is None and not AUTO:
@@ -1133,7 +1036,6 @@ def run(args, report: Report) -> None:
         print(dim(_("  Fonte '{fam}' não instalada; usando '{used}'.",
                     fam=fam, used=font_used)))
 
-    # ---------- 1. sistemas ----------
     step("Sistemas")
     fmt_systems(systems)
     idx = ask("Quais sistemas? (ex.: 1,3 ou all)",
@@ -1141,7 +1043,6 @@ def run(args, report: Report) -> None:
               default="all")
     chosen = [systems[i] for i in idx]
 
-    # ---------- 2. legendas (padrão = nome da pasta; editável) ----------
     if not AUTO:
         step("Legendas")
         print(dim(_("  Enter mantém o nome entre colchetes. Os nomes ficam em "
@@ -1155,7 +1056,6 @@ def run(args, report: Report) -> None:
             cfg["names"][s.key] = name
             cfg_changed = True
 
-    # ---------- 3. gráficos ----------
     items = available_plots(chosen)
     if not items:
         raise UsageError(_("Os sistemas escolhidos não têm arquivos plotáveis."))
@@ -1165,7 +1065,6 @@ def run(args, report: Report) -> None:
     do_summary = "summary" in plots
     do_res = "residues" in plots
 
-    # ---------- 4. parâmetros específicos ----------
     window: Optional[Tuple[float, float]] = None
     if do_time or do_res:
         step("Parâmetros")
@@ -1215,7 +1114,6 @@ def run(args, report: Report) -> None:
         if not AUTO:
             print()
 
-        # detecção do ligante
         det = {}
         for s in chosen:
             if s.res:
@@ -1241,7 +1139,6 @@ def run(args, report: Report) -> None:
         for s in chosen:
             s.drop_ligand = None if keep_ligand else s.ligand
 
-    # ---------- 5. cores ----------
     user_colors: List[str] = []
     if (do_time or do_summary or do_res) and not AUTO:
         step("Cores")
@@ -1273,7 +1170,6 @@ def run(args, report: Report) -> None:
             report.warn(_("Menos de 5 cores de componentes; completando com o padrão."))
             comp_colors += COMPONENT_COLORS[len(comp_colors):]
 
-    # ---------- 6. saída ----------
     step("Saída")
     if cfg["general"].get("language") != lang:
         cfg["general"]["language"] = lang
@@ -1308,7 +1204,6 @@ def run(args, report: Report) -> None:
               lang=lang, layout=layout)
     S = REPORT_TEXT[lang]
 
-    # ---------- relatório: cabeçalho e escolhas ----------
     report.add(S["title"])
     report.add(f"{S['date']}: {dt.datetime.now():%Y-%m-%d %H:%M:%S}")
     report.add(f"{S['root']}: {root}")
@@ -1341,7 +1236,6 @@ def run(args, report: Report) -> None:
     print(bold(_("Gerando")) + dim(f"  →  {outdir}"))
     print(dim("─" * 64))
 
-    # ---------- energia no tempo ----------
     if do_time:
         print(bold("\n  " + _("Energia no tempo")))
         data = {}
@@ -1381,7 +1275,6 @@ def run(args, report: Report) -> None:
                 df.to_csv(p, index=False)
                 report.file(p)
 
-    # ---------- médias do summary ----------
     if do_summary:
         print(bold("\n  " + _("Médias dos componentes")))
         sums = {}
@@ -1406,7 +1299,6 @@ def run(args, report: Report) -> None:
                     row += f"{m:>12.2f} ± {sd:<5.2f}"
                 report.add(row)
 
-    # ---------- resíduos ----------
     if do_res:
         print(bold("\n  " + _("Decomposição por resíduo")))
         report.section(S["res_sec"])
@@ -1455,7 +1347,6 @@ def run(args, report: Report) -> None:
             report.add(f"[{s.label}] {head}{removed}")
             report.add(rank_text(rank.head(n_show), cfg, lang))
 
-    # ---------- rodapé ----------
     report.section(S["files"])
     for f in report.files:
         report.add(str(f))
@@ -1526,7 +1417,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     report = Report()
-    if args.out is None:        # padrão: pasta nova a cada execução (não sobrescreve)
+    if args.out is None:
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         args.out = str(Path(args.root).resolve() / f"{OUT_DIR_NAME}_{stamp}")
     outdir = Path(args.out).resolve()
@@ -1563,19 +1454,13 @@ def main() -> int:
     return code
 
 
-# ============================================================
-# TRADUÇÃO DA INTERFACE (chave = texto em português)
-# ============================================================
-
 EN_UI: Dict[str, str] = {
-    # etapas do menu
     "Sistemas": "Systems",
     "Legendas": "Labels",
     "Gráficos": "Plots",
     "Parâmetros": "Parameters",
     "Cores": "Colors",
     "Saída": "Output",
-    # sistemas e gráficos
     "  {n} sistema(s) encontrado(s):": "  {n} system(s) found:",
     "energia vs. tempo": "energy vs. time",
     "resíduos": "residues",
@@ -1598,7 +1483,6 @@ EN_UI: Dict[str, str] = {
     "Quais gráficos? (ex.: 1,3 ou all)": "Which plots? (e.g. 1,3 or all)",
     "Os sistemas escolhidos não têm arquivos plotáveis.":
         "The chosen systems have no plottable files.",
-    # parâmetros
     " (dados: {lo:g}–{hi:g} ns)": " (data: {lo:g}–{hi:g} ns)",
     "Faixa de tempo em ns, início e fim{hint}":
         "Time range in ns, start and end{hint}",
@@ -1619,7 +1503,6 @@ EN_UI: Dict[str, str] = {
     "não detectado": "not detected",
     "Manter o ligante no ranking? (mantido, ele tende a dominar o topo)":
         "Keep the ligand in the ranking? (if kept, it tends to dominate the top)",
-    # cores
     "  Hex separados por vírgula (ex.: #0072B2,#D55E00). Enter usa a paleta padrão.":
         "  Comma-separated hex (e.g. #0072B2,#D55E00). Enter uses the default palette.",
     "Cores dos sistemas, na ordem escolhida": "System colors, in the chosen order",
@@ -1629,7 +1512,6 @@ EN_UI: Dict[str, str] = {
         "Fewer colors than systems; the rest use the default palette.",
     "Menos de 5 cores de componentes; completando com o padrão.":
         "Fewer than 5 component colors; filling in with the defaults.",
-    # saída
     "  Organização dos arquivos gerados:": "  Organization of generated files:",
     "por tipo de gráfico (recomendado)": "by plot type (recommended)",
     "por formato": "by file format",
@@ -1640,7 +1522,6 @@ EN_UI: Dict[str, str] = {
         "Also export the energy data as CSV (ns and kcal/mol)?",
     "Abrir janela interativa para ajustar cada figura antes de salvar?":
         "Open an interactive window to adjust each figure before saving?",
-    # geração
     "Gerando": "Generating",
     "Energia no tempo": "Energy vs. time",
     "Médias dos componentes": "Component averages",
@@ -1667,7 +1548,6 @@ EN_UI: Dict[str, str] = {
         "No graphical backend available; interactive window skipped.",
     "  ... ajuste '{stem}' na janela e feche-a para salvar.":
         "  ... adjust '{stem}' in the window and close it to save.",
-    # início
     "gráficos de MM/PBSA (g_mmpbsa / GROMOS)": "MM/PBSA plots (g_mmpbsa / GROMOS)",
     "  Pasta raiz: {root}": "  Root folder: {root}",
     "Pasta não encontrada: {root}": "Folder not found: {root}",
@@ -1677,7 +1557,6 @@ EN_UI: Dict[str, str] = {
         "  Font '{fam}' not installed; using '{used}'.",
     "  Configuração antiga atualizada (fonte Arial, textos por idioma).":
         "  Old configuration updated (Arial font, per-language texts).",
-    # fim
     "Interrompido.": "Interrupted.",
     "INTERROMPIDO pelo usuário": "INTERRUPTED by the user",
     "Erro: {err}": "Error: {err}",
@@ -1688,7 +1567,6 @@ EN_UI: Dict[str, str] = {
     "{w} aviso(s)": "{w} warning(s)",
     "Saída:": "Output:",
     "Relatório:": "Report:",
-    # entrada
     "Argumento inválido para '{text}': {err}": "Invalid argument for '{text}': {err}",
     "Modo --yes: '{text}' não tem padrão; informe por argumento.":
         "--yes mode: '{text}' has no default; provide it as an argument.",
@@ -1707,7 +1585,6 @@ EN_UI: Dict[str, str] = {
     "escolha 1 (por tipo), 2 (por formato) ou 3 (tudo junto)":
         "choose 1 (by type), 2 (by format) or 3 (all together)",
     "nome vazio": "empty name",
-    # erros de dados
     "{path} está malformado: {err}": "{path} is malformed: {err}",
     "{path}: não consegui ler os números ({err})": "{path}: could not read the numbers ({err})",
     "{path}: arquivo sem dados": "{path}: file has no data",
@@ -1718,7 +1595,6 @@ EN_UI: Dict[str, str] = {
         "{path}: expected 3 columns (name, mean, deviation)",
     "{path}: valor não numérico na linha '{row}'": "{path}: non-numeric value in row '{row}'",
     "{path}: nenhum componente reconhecido": "{path}: no recognized component",
-    # perguntas por prompt (ask)
     "Idioma / Language": "Idioma / Language",
 }
 
