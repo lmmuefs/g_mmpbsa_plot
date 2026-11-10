@@ -52,6 +52,10 @@ CONFIG_NAME = "plot_style.ini"
 XVG_NAME = "binding_energy.xvg"
 RES_NAME = "residues_energy_summary.csv"
 SUM_NAME = "energy_summary.csv"
+# Valores por frame da decomposição (g_mmpbsa -mmcon/-pcon/-apcon): permitem
+# recalcular a decomposição por resíduo dentro da faixa de tempo escolhida.
+CONTRIB_NAMES = {"contrib_mm.dat": "contrib_mm", "contrib_pol.dat": "contrib_pol",
+                 "contrib_apol.dat": "contrib_apol"}
 
 # Paleta padrão dos sistemas (distinguível, amigável a daltonismo e à impressão)
 PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7",
@@ -68,6 +72,8 @@ RES_COLS = {
     "polar": ("polar", "polar-stddev"),
     "nonpolar": ("apolar", "apolar-stddev"),
     "total": ("total", "total-stddev"),
+    # só existe na decomposição recalculada em uma faixa: contrib_MM junta vdW + elet.
+    "mm": ("MM", "MM-stddev"),
 }
 # Resíduos que NÃO são considerados ligante na detecção automática
 STANDARD_RESIDUES = set("""
@@ -105,12 +111,14 @@ REPORT_TEXT = {
         res_sec="PER-RESIDUE DECOMPOSITION (kcal/mol; more negative = more "
                 "favorable contribution)",
         full_saved="complete ranking saved as CSV; first 10 below",
+        res_window="residues recomputed from per-frame data in {a:g}–{b:g} ns "
+                   "(MM = vDW + electrostatic, which cannot be separated)",
         ligand_excl="ligand {l} excluded", ligand_keep="ligand kept",
         files="GENERATED FILES", warnings="WARNINGS",
         sd="± SD", rank="Rank", residue="Residue", complex="Complex",
         pm_cols={"vdw": "vDW ± std", "electrostatic": "Elec. ± std",
                  "polar": "Polar ± std", "nonpolar": "Apolar ± std",
-                 "total": "Total ± std"},
+                 "total": "Total ± std", "mm": "MM (vDW+Elec.) ± std"},
     ),
     "pt": dict(
         title="RELATÓRIO MM/PBSA", date="Data", root="Pasta raiz",
@@ -131,12 +139,14 @@ REPORT_TEXT = {
         res_sec="DECOMPOSIÇÃO POR RESÍDUO (kcal/mol; mais negativo = "
                 "contribuição mais favorável)",
         full_saved="ranking completo salvo em CSV; abaixo, os 10 primeiros",
+        res_window="resíduos recalculados com os dados por frame em {a:g}–{b:g} ns "
+                   "(MM = vDW + eletrostática, que não dá para separar)",
         ligand_excl="ligante {l} excluído", ligand_keep="ligante mantido",
         files="ARQUIVOS GERADOS", warnings="AVISOS",
         sd="± DP", rank="Pos.", residue="Resíduo", complex="Complexo",
         pm_cols={"vdw": "vDW ± dp", "electrostatic": "Elet. ± dp",
                  "polar": "Polar ± dp", "nonpolar": "Apolar ± dp",
-                 "total": "Total ± dp"},
+                 "total": "Total ± dp", "mm": "MM (vDW+Elet.) ± dp"},
     ),
 }
 
@@ -158,6 +168,7 @@ TEXT_EN = {
     "comp_polar": "Polar",
     "comp_nonpolar": "Nonpolar",
     "comp_total": "Total",
+    "comp_mm": "MM (vDW + Elec.)",
 }
 TEXT_PT = {
     "time_xlabel": "TEMPO (ns)",
@@ -177,6 +188,7 @@ TEXT_PT = {
     "comp_polar": "Polar",
     "comp_nonpolar": "Apolar",
     "comp_total": "Total",
+    "comp_mm": "MM (vDW + Elet.)",
 }
 
 # Configuração editável (plot_style.ini)
@@ -252,6 +264,9 @@ class System:
     xvg: Optional[Path] = None
     res: Optional[Path] = None
     summary: Optional[Path] = None
+    contrib_mm: Optional[Path] = None
+    contrib_pol: Optional[Path] = None
+    contrib_apol: Optional[Path] = None
     label: str = ""
     color: str = ""
     ligand: Optional[str] = None
@@ -614,7 +629,8 @@ def discover(root: Path, outdir: Path) -> List[System]:
     found: Dict[Path, System] = {}
     wanted = {XVG_NAME: "xvg", RES_NAME: "res", SUM_NAME: "summary"}
     for f in sorted(root.rglob("*")):
-        if f.name not in wanted or not f.is_file():
+        attr = wanted.get(f.name) or CONTRIB_NAMES.get(f.name.lower())
+        if attr is None or not f.is_file():
             continue
         rel_parts = f.relative_to(root).parts
         if any(p.startswith(".") for p in rel_parts):
@@ -625,7 +641,7 @@ def discover(root: Path, outdir: Path) -> List[System]:
         if d not in found:
             rel = d.relative_to(root).as_posix()
             found[d] = System(key=rel if rel != "." else d.name, path=d)
-        setattr(found[d], wanted[f.name], f)
+        setattr(found[d], attr, f)
     return sorted(found.values(), key=lambda s: _natural_key(s.key))
 
 
@@ -653,7 +669,7 @@ def load_residues(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
     df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
-    need = ["Residue"] + [c for pair in RES_COLS.values() for c in pair]
+    need = ["Residue"] + [c for k in COMPONENTS for c in RES_COLS[k]]
     missing = [c for c in need if c not in df.columns]
     if missing:
         raise DataError(_("{path}: faltam as colunas {missing}", path=path, missing=missing))
@@ -661,6 +677,59 @@ def load_residues(path: Path) -> pd.DataFrame:
     df["Residue"] = df["Residue"].astype(str).str.strip()
     for c in need[1:]:
         df[c] = pd.to_numeric(df[c], errors="coerce") / KJ_TO_KCAL
+    return df
+
+
+def _read_contrib(path: Path) -> Tuple[np.ndarray, List[str], np.ndarray]:
+    """Lê um contrib_*.dat: (tempo em ns, resíduos, valores em kcal/mol por frame)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            head = fh.readline().lstrip("#").split()
+        arr = np.loadtxt(path, comments="#", ndmin=2)
+    except (ValueError, OSError) as e:
+        raise DataError(_("{path}: não consegui ler os números ({err})", path=path, err=e))
+    names = head[1:]                       # primeira coluna: "Time"
+    if arr.shape[1] != len(names) + 1:
+        raise DataError(_("{path}: cabeçalho e dados não batem", path=path))
+    return arr[:, 0] / 1000.0, names, arr[:, 1:] / KJ_TO_KCAL
+
+
+def contrib_span(s: "System") -> Optional[Tuple[float, float]]:
+    if not s.contrib_mm:
+        return None
+    try:
+        with open(s.contrib_mm, encoding="utf-8", errors="replace") as fh:
+            t = np.loadtxt((l for l in fh if not l.startswith("#")),
+                           usecols=0, ndmin=1) / 1000.0
+    except (ValueError, OSError):
+        return None
+    return (float(t.min()), float(t.max())) if t.size else None
+
+
+def load_residues_window(s: "System", window: Tuple[float, float]) -> pd.DataFrame:
+    """Decomposição por resíduo recalculada só com os frames dentro da faixa.
+
+    Média e desvio (ddof=1) sobre os frames, como o g_mmpbsa faz no CSV.
+    contrib_MM já soma vdW + eletrostática, então sai uma coluna 'MM' no lugar
+    das duas. Colunas no mesmo formato do load_residues().
+    """
+    t, names, mm = _read_contrib(s.contrib_mm)
+    _t2, n2, pol = _read_contrib(s.contrib_pol)
+    _t3, n3, apol = _read_contrib(s.contrib_apol)
+    if not (names == n2 == n3 and mm.shape == pol.shape == apol.shape):
+        raise DataError(_("{path}: os arquivos contrib_* não têm os mesmos resíduos/frames",
+                          path=s.path))
+    m = (t >= window[0]) & (t <= window[1])
+    if m.sum() < 2:
+        raise DataError(_("{path}: menos de 2 frames na faixa {a:g}–{b:g} ns",
+                          path=s.path, a=window[0], b=window[1]))
+    parts = {"mm": mm[m], "polar": pol[m], "nonpolar": apol[m],
+             "total": mm[m] + pol[m] + apol[m]}
+    df = pd.DataFrame({"Residue": names})
+    for comp, vals in parts.items():
+        mc, sc = RES_COLS[comp]
+        df[mc] = vals.mean(axis=0)
+        df[sc] = vals.std(axis=0, ddof=1)
     return df
 
 
@@ -722,12 +791,19 @@ def make_ranking(df: pd.DataFrame, drop: Optional[str]) -> pd.DataFrame:
     return d
 
 
+def comps_of(df: pd.DataFrame) -> List[str]:
+    """Componentes presentes: vdW/elet. separados (CSV) ou MM junto (janela)."""
+    if "mm" in RES_COLS and RES_COLS["mm"][0] in df.columns:
+        return ["mm", "polar", "nonpolar", "total"]
+    return list(COMPONENTS)
+
+
 def pm_table(rank: pd.DataFrame, label: str, lang: str) -> pd.DataFrame:
     """Tabela 'média ± desvio' (cabeçalhos no idioma escolhido)."""
     S = REPORT_TEXT[lang]
     t = pd.DataFrame({S["rank"]: rank["Rank"], S["complex"]: label,
                       S["residue"]: rank["Residue"]})
-    for comp in COMPONENTS:
+    for comp in comps_of(rank):
         m, s = RES_COLS[comp]
         t[S["pm_cols"][comp]] = [f"{a:.2f} ± {b:.2f}"
                                  for a, b in zip(rank[m], rank[s])]
@@ -738,7 +814,7 @@ def rank_text(rank: pd.DataFrame, cfg: configparser.ConfigParser,
               lang: str) -> str:
     S = REPORT_TEXT[lang]
     cols, heads = ["Rank", "Residue"], [S["rank"], S["residue"]]
-    for comp in COMPONENTS:
+    for comp in comps_of(rank):
         cols += list(RES_COLS[comp])
         heads += [cfg[f"text_{lang}"][f"comp_{comp}"], S["sd"]]
     sub = rank[cols].copy()
@@ -885,12 +961,16 @@ def plot_residues_top(ctx: Ctx, s: System, rank: pd.DataFrame,
     residues = top["Residue"].tolist()
     k = len(residues)
     x = np.arange(k)
-    width = 0.15
+    comps = comps_of(top)
+    nc = len(comps)
+    width = 0.75 / 5
     fig, ax = plt.subplots(figsize=(min(11.0, max(7.5, 0.95 * k + 3.0)), 5.4))
-    for i, comp in enumerate(COMPONENTS):
+    # janela parcial: 4 barras (MM junta vdW + elet.); reaproveita as cores de polar/apolar/total
+    colors = comp_colors if nc == 5 else [comp_colors[0]] + comp_colors[2:5]
+    for i, comp in enumerate(comps):
         m, sd = RES_COLS[comp]
-        pos = x + (i - 2) * width
-        ax.bar(pos, top[m].to_numpy(), width=width, color=comp_colors[i],
+        pos = x + (i - (nc - 1) / 2) * width
+        ax.bar(pos, top[m].to_numpy(), width=width, color=colors[i],
                label=ctx.t(f"comp_{comp}"), edgecolor="none", zorder=3)
         ax.errorbar(pos, top[m].to_numpy(), yerr=top[sd].to_numpy(),
                     fmt="none", ecolor="#444444", elinewidth=1.1,
@@ -909,7 +989,7 @@ def plot_residues_top(ctx: Ctx, s: System, rank: pd.DataFrame,
                 va="bottom", fontsize=cfg_float(ctx.cfg, "font", "label_size"))
     ax.grid(axis="y", linewidth=0.6, alpha=0.3, zorder=0)
     style_axes(ax, minor_x=False)
-    legend_on_top(ax, len(COMPONENTS), ncol=len(COMPONENTS))
+    legend_on_top(ax, nc, ncol=nc)
     finish(ctx, fig, f"{s.slug}_per_residue_top{top_n}", "residues")
 
 
@@ -1089,9 +1169,12 @@ def run(args, report: Report) -> None:
     window: Optional[Tuple[float, float]] = None
     if do_time or do_res:
         step("Parâmetros")
-    if do_time:
+    if do_time or do_res:
         spans = []
         for s in chosen:
+            cs = contrib_span(s) if not s.xvg else None
+            if cs:
+                spans.append(cs)
             if s.xvg:
                 try:
                     t, _unused = load_xvg(s.xvg)
@@ -1334,6 +1417,18 @@ def run(args, report: Report) -> None:
                 continue
             try:
                 df = load_residues(s.res)
+                span = contrib_span(s)
+                partial = bool(window and span
+                               and (window[0] > span[0] or window[1] < span[1]))
+                if partial and s.contrib_pol and s.contrib_apol:
+                    df = load_residues_window(s, window)
+                    report.add(f"[{s.label}] " + S["res_window"].format(
+                        a=window[0], b=window[1]))
+                elif partial or (window and not span):
+                    report.warn(_("{label}: sem os arquivos contrib_*.dat; resíduos "
+                                  "calculados na trajetória inteira, não na faixa "
+                                  "{a:g}–{b:g} ns.", label=s.label,
+                                  a=window[0], b=window[1]))
             except DataError as e:
                 report.warn(str(e))
                 continue
@@ -1554,6 +1649,14 @@ EN_UI: Dict[str, str] = {
         "{label}: no {fname}; skipped in the time plots.",
     "{label}: sem {fname}; ignorado nas médias.":
         "{label}: no {fname}; skipped in the averages.",
+    "{path}: cabeçalho e dados não batem":
+        "{path}: header and data do not match",
+    "{path}: os arquivos contrib_* não têm os mesmos resíduos/frames":
+        "{path}: the contrib_* files do not have the same residues/frames",
+    "{path}: menos de 2 frames na faixa {a:g}–{b:g} ns":
+        "{path}: fewer than 2 frames in the {a:g}–{b:g} ns range",
+    "{label}: sem os arquivos contrib_*.dat; resíduos calculados na trajetória inteira, não na faixa {a:g}–{b:g} ns.":
+        "{label}: no contrib_*.dat files; residues computed over the whole trajectory, not the {a:g}–{b:g} ns range.",
     "{label}: sem {fname}; ignorado nos resíduos.":
         "{label}: no {fname}; skipped in the residues.",
     "{label}: nenhum frame entre {a} e {b} ns (dados: {lo:.1f}–{hi:.1f} ns).":

@@ -26,7 +26,10 @@ my_project/
 ├── system_A/
 │   ├── binding_energy.xvg            # energy vs. time (time + vdW, elec., polar, nonpolar, total)
 │   ├── energy_summary.csv            # component averages ± SD
-│   └── residues_energy_summary.csv   # per-residue decomposition
+│   ├── residues_energy_summary.csv   # per-residue decomposition (whole trajectory)
+│   ├── contrib_MM.dat                # per-frame, per-residue: vdW + electrostatic (optional)
+│   ├── contrib_pol.dat               # per-frame, per-residue: polar solvation   (optional)
+│   └── contrib_apol.dat              # per-frame, per-residue: nonpolar solvation (optional)
 ├── system_B/
 │   └── ...
 └── mmpbsa_plot.py
@@ -54,7 +57,8 @@ Then the menu asks, in this order:
 2. **Label** of each system. The default is the folder name; Enter keeps it.
 3. **Plots**: energy vs. time (total, vdW, electrostatic, polar, nonpolar),
    averages ± SD, per-residue decomposition.
-4. **Time range** in ns (no default: you type start and end).
+4. **Time range** in ns (no default: you type start and end). It applies to the
+   energy-vs-time plots **and** to the per-residue decomposition (see Notes).
 5. **Residues**: Top 5, Top 10 or All. *All is not recommended*: with hundreds of
    residues the bar chart is unreadable, so only the sequence-position profile and the
    complete CSV are generated.
@@ -67,16 +71,20 @@ Then the menu asks, in this order:
 
 ### Output
 
-By default everything goes to `MM_PBSA_plots/`, organized by plot type:
+By default everything goes to a new folder `MM_PBSA_plots_YYYYMMDD_HHMMSS/` created on
+every run (so nothing is ever overwritten), organized by plot type:
 
 ```
-MM_PBSA_plots/
+MM_PBSA_plots_YYYYMMDD_HHMMSS/
 ├── energy_vs_time/     # energy over time (one plot per component)
 ├── summary/            # component averages ± SD
 ├── per_residue/        # per-residue decomposition (one per system)
 ├── tables/             # CSVs: rankings, "mean ± SD" tables, plot data
 └── mmpbsa_report_YYYYMMDD_HHMMSS.txt
 ```
+
+Use `-o folder_name` to choose the output folder yourself (an existing folder is reused,
+and files with the same name are overwritten).
 
 In Portuguese the folders are named `energia_vs_tempo/`, `medias/`, `por_residuo/` and
 `tabelas/`. Other layouts are available: **by file format** (`png/`, `pdf/`, `svg/`,
@@ -141,6 +149,17 @@ python mmpbsa_plot.py . --systems 1,3 --plots total,vdw,residues \
 
 - The averages plot uses `energy_summary.csv`, i.e. the **whole trajectory**. The averages
   in the report for the chosen time range are computed from the `.xvg` and may differ.
+- **Per-residue decomposition and the time range.** `residues_energy_summary.csv` is a
+  single average over the frames used in the `g_mmpbsa` run, so it cannot be cut by time.
+  When the chosen range is shorter than the trajectory, the script recomputes mean and SD
+  (n−1) of each residue from the per-frame files `contrib_MM.dat`, `contrib_pol.dat` and
+  `contrib_apol.dat` (written by `g_mmpbsa` with `-mmcon`, `-pcon`, `-apcon`), using only
+  the frames inside the range. `contrib_MM.dat` already sums vdW + electrostatic, so in
+  that case the plot and tables show **4 components** (MM, Polar, Nonpolar, Total) instead
+  of 5. If the range covers the whole trajectory, the CSV is used (5 components). If the
+  `contrib_*.dat` files are missing, the CSV is used and a warning is shown. The report
+  states which range was used for the residues. To get vdW and electrostatic separately
+  in a sub-range, re-run `g_mmpbsa` with `-b`/`-e` for that range.
 - The `*_top_N_table.csv` file has the values in `mean ± SD` format.
 
 ## Authors

@@ -25,7 +25,10 @@ meu_projeto/
 ├── sistema_A/
 │   ├── binding_energy.xvg            # energia vs. tempo (tempo + vdW, elet., polar, apolar, total)
 │   ├── energy_summary.csv            # médias ± desvio dos componentes
-│   └── residues_energy_summary.csv   # decomposição por resíduo
+│   ├── residues_energy_summary.csv   # decomposição por resíduo (trajetória inteira)
+│   ├── contrib_MM.dat                # por frame e por resíduo: vdW + eletrostática (opcional)
+│   ├── contrib_pol.dat               # por frame e por resíduo: solvatação polar   (opcional)
+│   └── contrib_apol.dat              # por frame e por resíduo: solvatação apolar  (opcional)
 ├── sistema_B/
 │   └── ...
 └── mmpbsa_plot.py
@@ -53,7 +56,8 @@ Depois o menu pergunta, nesta ordem:
 2. **Legenda** de cada sistema. O padrão é o nome da pasta; Enter mantém.
 3. **Gráficos**: energia no tempo (total, vdW, eletrostática, polar, apolar),
    médias ± desvio, decomposição por resíduo.
-4. **Faixa de tempo** em ns (sem padrão: você digita início e fim).
+4. **Faixa de tempo** em ns (sem padrão: você digita início e fim). Vale para os gráficos
+   de energia no tempo **e** para a decomposição por resíduo (veja Observações).
 5. **Resíduos**: Top 5, Top 10 ou Todos. *Todos não é recomendado*: com centenas de
    resíduos o gráfico de barras fica ilegível, então só se gera o perfil por posição
    na sequência e o CSV completo.
@@ -65,16 +69,20 @@ Depois o menu pergunta, nesta ordem:
 
 ### Saída
 
-Por padrão, tudo vai para `MM_PBSA_plots/`, organizado por tipo de gráfico:
+Por padrão, tudo vai para uma pasta nova `MM_PBSA_plots_AAAAMMDD_HHMMSS/`, criada a cada
+execução (então nada é sobrescrito), organizada por tipo de gráfico:
 
 ```
-MM_PBSA_plots/
+MM_PBSA_plots_AAAAMMDD_HHMMSS/
 ├── energy_vs_time/     # energia em função do tempo (um gráfico por componente)
 ├── summary/            # médias ± desvio dos componentes
 ├── per_residue/        # decomposição por resíduo (um por sistema)
 ├── tables/             # CSVs: rankings, tabelas "média ± desvio", dados dos gráficos
 └── mmpbsa_report_AAAAMMDD_HHMMSS.txt
 ```
+
+Use `-o nome_da_pasta` para escolher a pasta de saída (se ela já existir, é reaproveitada,
+e arquivos com o mesmo nome são sobrescritos).
 
 Em português as pastas ficam `energia_vs_tempo/`, `medias/`, `por_residuo/` e `tabelas/`.
 Outras organizações disponíveis: **por formato** (`png/`, `pdf/`, `svg/`, útil na hora
@@ -140,6 +148,17 @@ python mmpbsa_plot.py . --systems 1,3 --plots total,vdw,residues \
 - O gráfico de médias usa o `energy_summary.csv`, ou seja, a **trajetória inteira**.
   As médias do relatório para a faixa de tempo escolhida são calculadas a partir do `.xvg`
   e podem diferir.
+- **Decomposição por resíduo e faixa de tempo.** O `residues_energy_summary.csv` é uma
+  média única sobre os frames usados na execução do `g_mmpbsa`, então não dá para cortá-lo
+  por tempo. Quando a faixa escolhida é menor que a trajetória, o script recalcula média e
+  desvio (n−1) de cada resíduo a partir dos arquivos por frame `contrib_MM.dat`,
+  `contrib_pol.dat` e `contrib_apol.dat` (gerados pelo `g_mmpbsa` com `-mmcon`, `-pcon`,
+  `-apcon`), usando só os frames dentro da faixa. O `contrib_MM.dat` já soma vdW +
+  eletrostática, então nesse caso o gráfico e as tabelas mostram **4 componentes** (MM,
+  Polar, Apolar, Total) em vez de 5. Se a faixa cobrir a trajetória inteira, usa-se o CSV
+  (5 componentes). Se os `contrib_*.dat` não existirem, usa-se o CSV e aparece um aviso. O
+  relatório informa a faixa usada nos resíduos. Para ter vdW e eletrostática separadas em
+  uma sub-faixa, rode o `g_mmpbsa` de novo com `-b`/`-e` dessa faixa.
 - A tabela `*_top_N_table.csv` traz os valores no formato `média ± desvio`.
 
 ## Autoria
